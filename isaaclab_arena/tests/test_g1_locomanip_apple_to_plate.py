@@ -26,8 +26,8 @@ def get_test_environment(num_envs: int):
 
     Uses a plain table background (instead of the full ``galileo_locomanip`` scene) to isolate
     task termination logic from the production environment while still exercising the
-    ``LocomanipPickAndPlaceTask`` + G1 WBC locomotion embodiment stack used by
-    ``galileo_g1_locomanip_pick_and_place``.
+    ``G1PickAndPlaceMimicEnvCfg`` injected via ``mimic_env_cfg_factory`` + G1 WBC
+    locomotion embodiment stack used by ``galileo_g1_locomanip_pick_and_place``.
     """
 
     from isaaclab_arena.assets.registries import AssetRegistry
@@ -36,7 +36,7 @@ def get_test_environment(num_envs: int):
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
     from isaaclab_arena.scene.scene import Scene
-    from isaaclab_arena.tasks.locomanip_pick_and_place_task import LocomanipPickAndPlaceTask
+    from isaaclab_arena.tasks.pick_and_place_task import G1PickAndPlaceMimicEnvCfg, PickAndPlaceTask
     from isaaclab_arena.utils.pose import Pose
 
     asset_registry = AssetRegistry()
@@ -50,13 +50,21 @@ def get_test_environment(num_envs: int):
     embodiment = G1WBCJointEmbodiment(enable_cameras=ENABLE_CAMERAS)
     embodiment.set_initial_pose(Pose(position_xyz=(-0.4, 0.0, 0.0), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
 
+    def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+        return G1PickAndPlaceMimicEnvCfg(
+            pick_up_object_name=apple.name,
+            destination_location_name=plate.name,
+            arm_mode=arm_mode,
+        )
+
     scene = Scene(assets=[background, apple, plate])
-    task = LocomanipPickAndPlaceTask(
+    task = PickAndPlaceTask(
         pick_up_object=apple,
         destination_location=plate,
         background_scene=background,
         episode_length_s=30.0,
         task_description="Pick up the apple from the table and place it onto the plate.",
+        mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
     )
 
     isaaclab_arena_environment = IsaacLabArenaEnvironment(
@@ -185,7 +193,7 @@ def _test_mimic_cfg_uses_object_and_destination_names(simulation_app) -> bool:
 
     from isaaclab_arena.assets.registries import AssetRegistry
     from isaaclab_arena.embodiments.common.arm_mode import ArmMode
-    from isaaclab_arena.tasks.locomanip_pick_and_place_task import LocomanipPickAndPlaceTask
+    from isaaclab_arena.tasks.pick_and_place_task import G1PickAndPlaceMimicEnvCfg, PickAndPlaceTask
     from isaaclab_arena.utils.pose import Pose
 
     asset_registry = AssetRegistry()
@@ -196,10 +204,18 @@ def _test_mimic_cfg_uses_object_and_destination_names(simulation_app) -> bool:
     apple.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.0)))
     plate.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.0)))
 
-    task = LocomanipPickAndPlaceTask(
+    def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+        return G1PickAndPlaceMimicEnvCfg(
+            pick_up_object_name=apple.name,
+            destination_location_name=plate.name,
+            arm_mode=arm_mode,
+        )
+
+    task = PickAndPlaceTask(
         pick_up_object=apple,
         destination_location=plate,
         background_scene=background,
+        mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
     )
 
     mimic_cfg = task.get_mimic_env_cfg(arm_mode=ArmMode.DUAL_ARM)
@@ -209,8 +225,8 @@ def _test_mimic_cfg_uses_object_and_destination_names(simulation_app) -> bool:
     ), f"Expected pick_up_object_name='{apple.name}', got '{mimic_cfg.pick_up_object_name}'"
 
     assert (
-        mimic_cfg.destination_name == plate.name
-    ), f"Expected destination_name='{plate.name}', got '{mimic_cfg.destination_name}'"
+        mimic_cfg.destination_location_name == plate.name
+    ), f"Expected destination_location_name='{plate.name}', got '{mimic_cfg.destination_location_name}'"
 
     # Datagen name must include BOTH the object and the destination so Mimic runs for e.g.
     # apple+plate vs apple+bin don't collide on the same dataset key.
@@ -244,7 +260,7 @@ def _test_mimic_cfg_brown_box_preserves_legacy_datagen_name(simulation_app) -> b
 
     from isaaclab_arena.assets.registries import AssetRegistry
     from isaaclab_arena.embodiments.common.arm_mode import ArmMode
-    from isaaclab_arena.tasks.locomanip_pick_and_place_task import LocomanipPickAndPlaceTask
+    from isaaclab_arena.tasks.pick_and_place_task import G1PickAndPlaceMimicEnvCfg, PickAndPlaceTask
     from isaaclab_arena.utils.pose import Pose
     from isaaclab_arena_environments.galileo_g1_locomanip_pick_and_place_environment import (
         _apply_legacy_datagen_name_override,
@@ -258,19 +274,27 @@ def _test_mimic_cfg_brown_box_preserves_legacy_datagen_name(simulation_app) -> b
     brown_box.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.0)))
     blue_bin.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.0)))
 
-    task = LocomanipPickAndPlaceTask(
+    def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+        return G1PickAndPlaceMimicEnvCfg(
+            pick_up_object_name=brown_box.name,
+            destination_location_name=blue_bin.name,
+            arm_mode=arm_mode,
+        )
+
+    task = PickAndPlaceTask(
         pick_up_object=brown_box,
         destination_location=blue_bin,
         background_scene=background,
+        mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
     )
 
     mimic_cfg = task.get_mimic_env_cfg(arm_mode=ArmMode.DUAL_ARM)
 
-    # Sanity check: the task itself should always produce the per-pair templated name now. The
-    # legacy name is applied by the environment callback, not the task.
+    # Sanity check: the cfg itself should always produce the per-pair templated name now. The
+    # legacy name is applied by the environment callback, not the cfg.
     assert mimic_cfg.datagen_config.name != "locomanip_pick_and_place_D0", (
-        "LocomanipPickAndPlaceTask must not produce the legacy datagen name directly; that is the "
-        f"environment callback's job. Got '{mimic_cfg.datagen_config.name}'."
+        "G1PickAndPlaceMimicEnvCfg must not produce the legacy datagen name directly; "
+        f"that is the environment callback's job. Got '{mimic_cfg.datagen_config.name}'."
     )
 
     _apply_legacy_datagen_name_override(
@@ -299,7 +323,7 @@ def _test_mimic_cfg_brown_box_non_default_destination_is_not_legacy(simulation_a
 
     from isaaclab_arena.assets.registries import AssetRegistry
     from isaaclab_arena.embodiments.common.arm_mode import ArmMode
-    from isaaclab_arena.tasks.locomanip_pick_and_place_task import LocomanipPickAndPlaceTask
+    from isaaclab_arena.tasks.pick_and_place_task import G1PickAndPlaceMimicEnvCfg, PickAndPlaceTask
     from isaaclab_arena.utils.pose import Pose
     from isaaclab_arena_environments.galileo_g1_locomanip_pick_and_place_environment import (
         _apply_legacy_datagen_name_override,
@@ -313,10 +337,18 @@ def _test_mimic_cfg_brown_box_non_default_destination_is_not_legacy(simulation_a
     brown_box.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.0)))
     plate.set_initial_pose(Pose(position_xyz=(0.0, 0.0, 0.0)))
 
-    task = LocomanipPickAndPlaceTask(
+    def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+        return G1PickAndPlaceMimicEnvCfg(
+            pick_up_object_name=brown_box.name,
+            destination_location_name=plate.name,
+            arm_mode=arm_mode,
+        )
+
+    task = PickAndPlaceTask(
         pick_up_object=brown_box,
         destination_location=plate,
         background_scene=background,
+        mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
     )
 
     mimic_cfg = task.get_mimic_env_cfg(arm_mode=ArmMode.DUAL_ARM)

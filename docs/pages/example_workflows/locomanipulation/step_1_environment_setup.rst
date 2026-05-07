@@ -25,7 +25,7 @@ Environment Description
            def get_env(self, args_cli: argparse.Namespace):
                from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
                from isaaclab_arena.scene.scene import Scene
-               from isaaclab_arena.tasks.locomanip_pick_and_place_task import LocomanipPickAndPlaceTask
+               from isaaclab_arena.tasks.pick_and_place_task import G1PickAndPlaceMimicEnvCfg, PickAndPlaceTask
                from isaaclab_arena.utils.pose import Pose, PoseRange
 
                background = self.asset_registry.get_asset_by_name("galileo_locomanip")()
@@ -52,8 +52,20 @@ Environment Description
                )
                embodiment.set_initial_pose(Pose(position_xyz=(0.0, 0.18, 0.0), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
 
+               def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+                   return G1PickAndPlaceMimicEnvCfg(
+                       pick_up_object_name=pick_up_object.name,
+                       destination_location_name=blue_sorting_bin.name,
+                       arm_mode=arm_mode,
+                   )
+
                scene = Scene(assets=[background, pick_up_object, blue_sorting_bin])
-               task = LocomanipPickAndPlaceTask(pick_up_object, blue_sorting_bin, background),
+               task = PickAndPlaceTask(
+                   pick_up_object,
+                   blue_sorting_bin,
+                   background,
+                   mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
+               )
 
                isaaclab_arena_environment = IsaacLabArenaEnvironment(
                    name=self.name,
@@ -118,14 +130,28 @@ currently set manually to create an achievable task.
 Now we bring everything together into a IsaacLab-Arena scene.
 See :doc:`../../concepts/scene/index` for scene composition details.
 
-**4. Create the Locomanip Pick and Place Task**
+**4. Create the Pick and Place Task**
 
 .. code-block:: python
 
-    task = LocomanipPickAndPlaceTask(pick_up_object, blue_sorting_bin, background),
+    def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+        return G1PickAndPlaceMimicEnvCfg(
+            pick_up_object_name=pick_up_object.name,
+            destination_location_name=blue_sorting_bin.name,
+            arm_mode=arm_mode,
+        )
 
-The ``LocomanipPickAndPlaceTask`` encapsulates the task's goal of the
-environment: pick up the specified object and place it in the blue sorting bin.
+    task = PickAndPlaceTask(
+        pick_up_object,
+        blue_sorting_bin,
+        background,
+        mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
+    )
+
+``PickAndPlaceTask`` encapsulates the task's goal of the environment: pick up the specified object
+and place it in the blue sorting bin. The locomanip-specific Mimic config (3-subtask arm sequences
+plus a 4-phase nav body) is injected via ``mimic_env_cfg_factory`` rather than via a task subclass,
+because the cfg shape diverges from the parent ``PickPlaceMimicEnvCfg`` defaults.
 
 The task knows about the key objects involved (what to pick, where to place it, and the environment context) and will
 provide rewards, compute observations, and determine when the episode should end.
