@@ -26,6 +26,13 @@ from typing import Any
 
 import pytest
 
+# NOTE: ``isaaclab_arena.policy.action_scheduling`` is imported lazily inside
+# tests/helpers (mirrors ``test_action_scheduling.py``). Importing it at module
+# top level pulls in ``isaaclab_arena.policy.__init__`` which star-imports
+# policies that load isaaclab/pxr — that pre-loads pxr at pytest collection
+# time and trips Kit's ``omni.kit.usd.mdl`` extension when a sibling test later
+# instantiates SimulationApp (CI gr00t docker has GROOT_DEPS_DIR set, which
+# makes the ordering fatal).
 from isaaclab_arena_gr00t.tests.utils.constants import TestConstants as Gr00tTestConstants
 
 NUM_ENVS = 2
@@ -131,11 +138,16 @@ def fake_client_factory(monkeypatch):
     return factory
 
 
-def _build_policy(policy_config_yaml: str):
+def _build_policy(policy_config_yaml: str, action_scheduler_cls=None):
     from isaaclab_arena_gr00t.policy.gr00t_remote_closedloop_policy import (
         Gr00tRemoteClosedloopPolicy,
         Gr00tRemoteClosedloopPolicyArgs,
     )
+
+    if action_scheduler_cls is None:
+        from isaaclab_arena.policy.action_scheduling import ActionChunkScheduler
+
+        action_scheduler_cls = ActionChunkScheduler
 
     args = Gr00tRemoteClosedloopPolicyArgs(
         policy_config_yaml_path=policy_config_yaml,
@@ -145,7 +157,7 @@ def _build_policy(policy_config_yaml: str):
         remote_port=0,
         remote_api_token=None,
     )
-    return Gr00tRemoteClosedloopPolicy(args)
+    return Gr00tRemoteClosedloopPolicy(args, action_scheduler_cls=action_scheduler_cls)
 
 
 # ------------------------------- tests ------------------------------- #
@@ -217,3 +229,53 @@ def test_construction_fails_when_server_unreachable(policy_config_yaml, fake_cli
     fake_client_factory(ping_ok=False)
     with pytest.raises(ConnectionError):
         _build_policy(policy_config_yaml)
+
+
+# ---------------- scheduler-switch tests ---------------- #
+
+
+@pytest.mark.parametrize("scheduler_cls_name", ["ActionChunkScheduler", "SyncedBatchActionScheduler"])
+def test_get_action_returns_correct_shape_for_each_scheduler(
+    policy_config_yaml, synthetic_observation, fake_client_factory, scheduler_cls_name
+):
+    """Both ActionChunkScheduler and SyncedBatchActionScheduler should drive the policy
+    end-to-end and produce one (num_envs, action_dim) action per get_action call."""
+    from isaaclab_arena.policy import action_scheduling
+
+    scheduler_cls = getattr(action_scheduling, scheduler_cls_name)
+
+    fake_client_factory(ping_ok=True)
+    policy = _build_policy(policy_config_yaml, action_scheduler_cls=scheduler_cls)
+    assert isinstance(policy._chunking_state, scheduler_cls)
+    policy.set_task_description("pick up the brown box")
+
+    action = policy.get_action(env=None, observation=synthetic_observation)
+
+    assert isinstance(action, torch.Tensor)
+    assert action.shape == (NUM_ENVS, EXPECTED_ACTION_DIM)
+    assert action.device.type == "cpu"
+
+
+def test_synced_batch_holds_joint_position_for_env_after_partial_reset(
+    policy_config_yaml, synthetic_observation, fake_client_factory
+):
+    """After resetting a single env, SyncedBatchActionScheduler should hold that env on
+    the joint-position-derived hold_action while the others continue stepping their chunk."""
+    from isaaclab_arena.policy.action_scheduling import SyncedBatchActionScheduler
+
+    clients = fake_client_factory(ping_ok=True)
+    policy = _build_policy(policy_config_yaml, action_scheduler_cls=SyncedBatchActionScheduler)
+    policy.set_task_description("pick up the brown box")
+
+    # Step 1: every env needs a chunk → exactly one fetch.
+    policy.get_action(env=None, observation=synthetic_observation)
+    assert clients[0].get_action_calls == 1
+
+    # Reset env 1 only; env 0 still has its chunk.
+    policy.reset(env_ids=torch.tensor([1]))
+
+    action = policy.get_action(env=None, observation=synthetic_observation)
+    # No new chunk fetched (env 0 not yet exhausted, so .all() is False).
+    assert clients[0].get_action_calls == 1
+    expected_hold = policy._extract_hold_action(synthetic_observation)
+    torch.testing.assert_close(action[1], expected_hold[1])

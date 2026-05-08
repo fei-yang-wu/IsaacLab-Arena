@@ -19,7 +19,7 @@ from typing import Any
 
 from gr00t.policy.server_client import PolicyClient as Gr00tPolicyClient
 
-from isaaclab_arena.policy.action_chunking import ActionChunkingState
+from isaaclab_arena.policy.action_scheduling import ActionChunkScheduler, ActionScheduler, SyncedBatchActionScheduler
 from isaaclab_arena.policy.policy_base import PolicyBase
 from isaaclab_arena_gr00t.policy.config.gr00t_closedloop_policy_config import Gr00tClosedloopPolicyConfig, TaskMode
 from isaaclab_arena_gr00t.policy.gr00t_core import (
@@ -72,7 +72,11 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase):
     name = "gr00t_remote_closedloop"
     config_class = Gr00tRemoteClosedloopPolicyArgs
 
-    def __init__(self, config: Gr00tRemoteClosedloopPolicyArgs):
+    def __init__(
+        self,
+        config: Gr00tRemoteClosedloopPolicyArgs,
+        action_scheduler_cls: type[ActionScheduler] = ActionChunkScheduler,
+    ):
         super().__init__(config)
 
         # Policy config (for obs/action translation — no model loading)
@@ -100,8 +104,7 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase):
         self.action_dim = compute_action_dim(self.task_mode, self.robot_action_joints_config)
         self.action_chunk_length = self.policy_config.action_chunk_length
 
-        # TODO(xinjieyao, 2026-04-27): consider adding & using ActionChunkingScheduler instead
-        self._chunking_state = ActionChunkingState(
+        self._chunking_state = action_scheduler_cls(
             num_envs=self.num_envs,
             action_chunk_length=self.action_chunk_length,
             action_horizon=self.policy_config.action_horizon,
@@ -145,12 +148,28 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase):
         group.add_argument("--remote_host", type=str, default="localhost", help="GR00T policy server hostname")
         group.add_argument("--remote_port", type=int, default=5555, help="GR00T policy server port")
         group.add_argument("--remote_api_token", type=str, default=None, help="API token for the policy server")
+        group.add_argument(
+            "--scheduler",
+            type=str,
+            default="chunk",
+            choices=["chunk", "synced_batch"],
+            help=(
+                "Action scheduler: 'chunk' fetches a new chunk for any env that needs one;"
+                " 'synced_batch' waits until ALL envs need a new chunk and then issues a single"
+                " full-batch inference call (envs that finish early hold their current robot state)."
+            ),
+        )
         return parser
 
     @staticmethod
     def from_args(args: argparse.Namespace) -> Gr00tRemoteClosedloopPolicy:
         config = Gr00tRemoteClosedloopPolicyArgs.from_cli_args(args)
-        return Gr00tRemoteClosedloopPolicy(config)
+        scheduler_cls: type[ActionScheduler] = (
+            SyncedBatchActionScheduler
+            if getattr(args, "scheduler", "chunk") == "synced_batch"
+            else ActionChunkScheduler
+        )
+        return Gr00tRemoteClosedloopPolicy(config, action_scheduler_cls=scheduler_cls)
 
     # ---------------------- Policy interface -------------------
 
@@ -169,7 +188,21 @@ class Gr00tRemoteClosedloopPolicy(PolicyBase):
         def fetch_chunk() -> torch.Tensor:
             return self._get_action_chunk(observation, self.policy_config.pov_cam_name_sim)
 
-        return self._chunking_state.get_action(fetch_chunk)
+        return self._chunking_state.get_action(
+            fetch_chunk,
+            hold_action=self._extract_hold_action(observation),
+        )
+
+    def _extract_hold_action(self, observation: dict[str, Any]) -> torch.Tensor:
+        """Build the action vector that waiting envs should hold: their current sim joint positions
+        copied into the action slots that share a joint name with the state config."""
+        joint_pos_sim = observation["policy"]["robot_joint_pos"].to(device=self.device, dtype=torch.float)
+        hold_action = torch.zeros((self.num_envs, self.action_dim), dtype=torch.float, device=self.device)
+        for joint_name, action_idx in self.robot_action_joints_config.items():
+            state_idx = self.robot_state_joints_config.get(joint_name)
+            if state_idx is not None:
+                hold_action[:, action_idx] = joint_pos_sim[:, state_idx]
+        return hold_action
 
     def _get_action_chunk(
         self, observation: dict[str, Any], camera_names: list[str] | str = "robot_head_cam_rgb"

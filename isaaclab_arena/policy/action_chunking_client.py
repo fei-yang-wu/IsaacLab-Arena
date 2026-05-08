@@ -21,6 +21,7 @@ from isaaclab_arena.remote_policy.action_protocol import ChunkingActionProtocol
 from isaaclab_arena.remote_policy.remote_policy_config import RemotePolicyConfig
 
 
+# TODO(xinjieyao, 2026-05-06): Delete once all callers have migrated to action_scheduling.ActionChunkScheduler
 class ActionChunkingClientSidePolicy(ClientSidePolicy):
     """Client-side policy that consumes fixed-length action chunks sequentially."""
 

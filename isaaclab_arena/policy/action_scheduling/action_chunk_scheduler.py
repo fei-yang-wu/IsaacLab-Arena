@@ -3,20 +3,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared action chunking state and logic for local and remote policies."""
+"""ActionChunkScheduler: buffer an action chunk and step through it sequentially."""
 
 from __future__ import annotations
 
 import torch
 from collections.abc import Callable
 
+from isaaclab_arena.policy.action_scheduling.action_scheduler import ActionScheduler
 
-# TODO(xinjieyao, 2026-05-06): Delete once all callers have migrated to action_scheduling.ActionChunkScheduler
-class ActionChunkingState:
-    """Holds chunk buffer, per-env index, and refill flag; provides get_action(fetch_chunk_fn).
 
-    Used by both Gr00tClosedloopPolicy (local) and ActionChunkingClientSidePolicy (remote)
-    so chunking behavior is identical.
+class ActionChunkScheduler(ActionScheduler):
+    """Buffers one action chunk and replays it one step at a time.
+
+    Fetches a new action tensor from the policy only when the current one is exhausted.
+    Per-env tracking allows environments to refetch independently.
     """
 
     def __init__(
@@ -44,21 +45,39 @@ class ActionChunkingState:
         self.current_action_index = torch.zeros(num_envs, dtype=torch.int32, device=device)
         self.env_requires_new_chunk = torch.ones(num_envs, dtype=torch.bool, device=device)
 
-    def get_action(self, fetch_chunk_fn: Callable[[], torch.Tensor]) -> torch.Tensor:
+        # Fetch-efficiency tracking: how many times each env triggered a chunk fetch,
+        # and how many envs actually needed the fetch vs. total (wasted compute detection).
+        self._n_fetch_calls: int = 0
+        self._total_envs_needed: int = 0
+        self._per_env_fetch_count = torch.zeros(num_envs, dtype=torch.int64, device=device)
+
+    def get_action(
+        self,
+        fetch_action_tensor_fn: Callable[[], torch.Tensor],
+        hold_action: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Return one action per env, refilling the chunk when needed.
 
-        fetch_chunk_fn() must return a tensor of shape (num_envs, horizon, action_dim)
-        with horizon >= action_chunk_length.
+        fetch_action_tensor_fn() must return a tensor of shape (num_envs, horizon, action_dim)
+        with horizon >= action_horizon.
+
+        ``hold_action`` is part of the base ``ActionScheduler`` API for schedulers that
+        need a fallback for waiting envs; this scheduler doesn't have a waiting state
+        so the argument is accepted and ignored.
         """
+        del hold_action
         if self.env_requires_new_chunk.any():
-            # compute a new action chunk for the envs that require a new action chunk
-            new_chunk = fetch_chunk_fn()
+            new_chunk = fetch_action_tensor_fn()
             mask = self.env_requires_new_chunk
             self.current_action_chunk[mask] = new_chunk[mask]
-            # reset the action index for those env_ids
             self.current_action_index[mask] = 0
-            # reset the env_requires_new_chunk for those env_ids
             self.env_requires_new_chunk[mask] = False
+
+            self._n_fetch_calls += 1
+            n_needed = int(mask.sum().item())
+            self._total_envs_needed += n_needed
+            self._per_env_fetch_count[mask] += 1
+
         assert self.current_action_index.min() >= 0, "At least one env's action index is less than 0"
         assert (
             self.current_action_index.max() < self.action_chunk_length
@@ -80,7 +99,7 @@ class ActionChunkingState:
 
         return action
 
-    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         """Reset chunking state for the given envs (all if None)."""
         if env_ids is None:
             env_ids = slice(None)
