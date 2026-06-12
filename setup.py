@@ -16,6 +16,10 @@ RUNTIME_DEPS = [
     "pytest",
     "pydantic>=2.0",
     "openai>=2.0",
+    # Sensitivity analysis (isaaclab_arena.analysis.sensitivity), imported at module level.
+    "sbi",
+    "scipy",
+    "matplotlib",
 ]
 
 DEV_DEPS = [
