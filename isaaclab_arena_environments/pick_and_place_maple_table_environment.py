@@ -10,8 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from isaaclab_arena.assets.register import register_environment
-from isaaclab_arena.environments.arena_environment_cfg import ArenaEnvironmentCfg
-from isaaclab_arena_environments.example_environment_base import ExampleEnvironmentBase
+from isaaclab_arena.environments.arena_environment_factory import ArenaEnvironmentCfg, ArenaEnvironmentFactory
 
 if TYPE_CHECKING:
     from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
@@ -31,7 +30,7 @@ class PickAndPlaceMapleTableEnvironmentCfg(ArenaEnvironmentCfg):
 
 
 @register_environment
-class PickAndPlaceMapleTableEnvironment(ExampleEnvironmentBase[PickAndPlaceMapleTableEnvironmentCfg]):
+class PickAndPlaceMapleTableEnvironment(ArenaEnvironmentFactory[PickAndPlaceMapleTableEnvironmentCfg]):
     """Registered provider for the Maple-table pick-and-place environment."""
 
     name: str = "pick_and_place_maple_table"
@@ -114,8 +113,7 @@ class PickAndPlaceMapleTableEnvironment(ExampleEnvironmentBase[PickAndPlaceMaple
 
     # TODO(cvolk, 2026-07-03): Delete this CLI-only option when teleoperation runners
     # receive typed configuration instead of the environment subparser namespace.
-    @classmethod
-    def add_cli_args(cls, parser: argparse.ArgumentParser) -> None:
-        super().add_cli_args(parser)
+    @staticmethod
+    def _add_legacy_cli_only_args(parser: argparse.ArgumentParser) -> None:
         # Consumed directly by teleop.py and record_demos.py, not by build(cfg).
         parser.add_argument("--teleop_device", type=str, default=None)
